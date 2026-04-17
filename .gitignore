@@ -1,0 +1,25 @@
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Runtime logs and local demo output
+generic_models/live_logs/
+generic_models/admin_bot_runs/
+generic_models/live_graphs/
+catboost_info/
+run_logs.txt
+logs.txt
+
+# Generated tabular datasets and downloaded public CSVs
+generic_models/artifacts/data/*.csv
+generic_models/artifacts/reports/*.csv
+generic_models/artifacts_fast/
+generic_models/artifacts_download_check/
+generic_models/data/external/zenodo/*.csv
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
