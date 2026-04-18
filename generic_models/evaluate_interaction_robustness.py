@@ -35,6 +35,7 @@ HUMAN_SCENARIOS = [
     "human_revisit_heavy",
     "human_scroll_heavy",
     "human_low_scroll",
+    "human_low_activity_clicks",
     "human_product_then_leave",
     "human_search_cart_contact",
     "human_unusual_pattern",
@@ -47,6 +48,7 @@ BOT_SCENARIOS = [
     "coverage_greedy_bot",
     "bursty_timing_bot",
     "browser_mouse_noise_bot",
+    "bot_py_like_bot",
     "direct_goto_bot",
     "click_based_bot",
 ]
@@ -59,6 +61,7 @@ SCENARIO_NOTES = {
     "human_revisit_heavy": "Human repeatedly backtracks and revisits pages.",
     "human_scroll_heavy": "Lots of reading/scrolling before navigation.",
     "human_low_scroll": "Almost no scrolling but still click-driven.",
+    "human_low_activity_clicks": "Sparse telemetry but still causal click-driven navigation.",
     "human_product_then_leave": "Short product/detail visit then exit.",
     "human_search_cart_contact": "Uses utility/cart/contact-style paths.",
     "human_unusual_pattern": "Weird but still causal click-driven human path.",
@@ -68,6 +71,7 @@ SCENARIO_NOTES = {
     "coverage_greedy_bot": "Chooses unvisited/high-coverage pages.",
     "bursty_timing_bot": "Alternates very fast bursts with pauses.",
     "browser_mouse_noise_bot": "Browser-like mouse and scroll noise, but no causal click chain.",
+    "bot_py_like_bot": "Real-browser direct goto style with random mouse/scroll noise and no causal click chain.",
     "direct_goto_bot": "Direct navigation to valid URLs without click precursors.",
     "click_based_bot": "Uses matching clicks but follows systematic coverage behavior.",
 }
@@ -198,6 +202,8 @@ def path_for_scenario(spec: WebsiteSpec, site: GenericSite, *, scenario: str, rn
         return random_walk_paths(spec, rng=rng, length=rng.randint(12, 22), revisit_bias=0.16, jump_bias=0.08)
     if scenario == "browser_mouse_noise_bot":
         return random_walk_paths(spec, rng=rng, length=rng.randint(10, 20), revisit_bias=0.20, jump_bias=0.08)
+    if scenario == "bot_py_like_bot":
+        return random_walk_paths(spec, rng=rng, length=rng.randint(7, 12), revisit_bias=0.22, jump_bias=0.0)
     if scenario == "random_walk_bot":
         return random_walk_paths(spec, rng=rng, length=rng.randint(11, 21), revisit_bias=0.28, jump_bias=0.18)
 
@@ -229,7 +235,7 @@ def timestamps_for_scenario(site: GenericSite, paths: list[str], *, scenario: st
             delta = expected * rng.uniform(0.55, 1.25)
         elif scenario == "bursty_timing_bot":
             delta = rng.choice([rng.uniform(0.06, 0.22), rng.uniform(7.0, 18.0)])
-        elif scenario in {"browser_mouse_noise_bot", "direct_goto_bot"}:
+        elif scenario in {"browser_mouse_noise_bot", "bot_py_like_bot", "direct_goto_bot"}:
             delta = rng.uniform(2.0, 5.0)
         elif scenario == "click_based_bot":
             delta = rng.uniform(0.45, 1.80)
@@ -241,7 +247,7 @@ def timestamps_for_scenario(site: GenericSite, paths: list[str], *, scenario: st
 
 def telemetry_for_scenario(session: GenericSession, site: GenericSite, *, scenario: str, rng: random.Random) -> list[dict[str, Any]]:
     telemetry: list[dict[str, Any]] = []
-    browser_like = scenario in {"browser_mouse_noise_bot", "direct_goto_bot"}
+    browser_like = scenario in {"browser_mouse_noise_bot", "bot_py_like_bot", "direct_goto_bot"}
     click_based_bot = scenario == "click_based_bot"
     has_client_telemetry = scenario.startswith("human_") or browser_like or click_based_bot
     if not has_client_telemetry:
@@ -253,9 +259,14 @@ def telemetry_for_scenario(session: GenericSession, site: GenericSite, *, scenar
         telemetry.append(event(session, "page_load", start + 0.04, path, interactive_count=interactive_count(site, path), content_length=content_length(site, path)))
 
         if scenario.startswith("human_"):
-            move_count = rng.randint(2, 8)
-            scroll_count = human_scroll_count(scenario, rng)
-            meaningful_extra = rng.randint(0, 3)
+            if scenario == "human_low_activity_clicks":
+                move_count = rng.randint(0, 2)
+                scroll_count = rng.randint(0, 1)
+                meaningful_extra = 0
+            else:
+                move_count = rng.randint(2, 8)
+                scroll_count = human_scroll_count(scenario, rng)
+                meaningful_extra = rng.randint(0, 3)
             for move_index in range(move_count):
                 telemetry.append(event(session, "mousemove", start + 0.20 + move_index * 0.25, path, target_href=next_path if rng.random() < 0.35 else ""))
             for scroll_index in range(scroll_count):
@@ -269,9 +280,11 @@ def telemetry_for_scenario(session: GenericSession, site: GenericSite, *, scenar
                 click_time = max(start + 0.25, end - rng.uniform(0.35, 1.85))
                 telemetry.extend(click_events(session, path, next_path, click_time))
         elif browser_like:
-            for move_index in range(rng.randint(1, 4)):
+            max_moves = 7 if scenario == "bot_py_like_bot" else 4
+            scroll_chance = 0.48 if scenario == "bot_py_like_bot" else 0.60
+            for move_index in range(rng.randint(1, max_moves)):
                 telemetry.append(event(session, "mousemove", start + 0.25 + move_index * 0.35, path))
-            if rng.random() < 0.60:
+            if rng.random() < scroll_chance:
                 telemetry.append(event(session, "scroll", start + rng.uniform(0.75, 1.70), path, y=rng.randint(200, 700), ratio=rng.uniform(0.08, 0.62)))
         elif click_based_bot and next_path:
             telemetry.append(event(session, "mousemove", start + 0.18, path, target_href=next_path))
@@ -396,7 +409,18 @@ def feature_importance(feature_df: pd.DataFrame, *, bundle: dict[str, Any], rand
 
 def build_sample_table(scored_df: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for scenario in ["human_normal", "human_fast", "human_revisit_heavy", "bfs_crawler", "random_walk_bot", "browser_mouse_noise_bot", "direct_goto_bot", "click_based_bot"]:
+    for scenario in [
+        "human_normal",
+        "human_fast",
+        "human_low_activity_clicks",
+        "human_revisit_heavy",
+        "bfs_crawler",
+        "random_walk_bot",
+        "browser_mouse_noise_bot",
+        "bot_py_like_bot",
+        "direct_goto_bot",
+        "click_based_bot",
+    ]:
         group = scored_df[scored_df["scenario"] == scenario].sort_values("score")
         sample = group.iloc[len(group) // 2]
         detected = "Yes" if int(sample["prediction"]) == 1 else "No"

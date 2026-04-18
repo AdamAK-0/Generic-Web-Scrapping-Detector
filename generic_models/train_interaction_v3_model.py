@@ -26,6 +26,24 @@ from generic_models.site_catalog import build_all_generic_sites, get_websites
 from generic_models.train_generic_models import predict_proba, tune_threshold
 
 
+V3_EXCLUDED_FEATURES = {
+    # Raw telemetry volume was too easy to overfit in synthetic robustness data.
+    # V3 keeps provenance ratios and anomaly scores instead, so browser bots with
+    # realistic mouse noise still get judged by causality rather than event count.
+    "telemetry_event_count",
+    "telemetry_events_per_request",
+    "mousemove_count",
+    "scroll_event_count",
+    "scroll_burst_count",
+    "click_count",
+    "pointer_event_count",
+    "focus_count",
+    "keydown_count",
+    "meaningful_event_count",
+    "page_load_event_count",
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train interaction-aware generic v3 detector")
     parser.add_argument("--artifacts-dir", default="generic_models/artifacts")
@@ -54,7 +72,7 @@ def main() -> None:
     feature_df = build_feature_frame(robust_sessions, sites=sites, telemetry_df=telemetry_df)
     feature_df.to_csv(data_dir / "interaction_v3_training_features.csv", index=False)
 
-    feature_columns = [column for column in feature_df.columns if column not in ID_COLUMNS]
+    feature_columns = [column for column in feature_df.columns if column not in ID_COLUMNS and column not in V3_EXCLUDED_FEATURES]
     threshold = tune_global_threshold(feature_df, feature_columns, random_state=args.random_state)
     cv_scores, cv_predictions, cv_labels = leave_one_site_out_predictions(feature_df, feature_columns, random_state=args.random_state)
     cv_metrics = metrics_dict(cv_labels, cv_predictions, cv_scores)
@@ -77,7 +95,9 @@ def main() -> None:
         "notes": (
             "V3 is trained beside v2 on expanded robustness scenarios including "
             "BFS, DFS, random walk, coverage-greedy, bursty timing, browser mouse-noise, "
-            "direct-goto, and click-based bots plus difficult human browsing variants."
+            "bot.py-like direct-goto, direct-goto, and click-based bots plus difficult "
+            "human browsing variants. Raw telemetry-volume count features are excluded "
+            "so the model learns causality, graph behavior, timing, and anomaly ratios."
         ),
     }
     bundle_path = model_dir / "interaction_v3_generic_bundle.pkl"
@@ -133,7 +153,8 @@ def write_summary(
         f"- Training sessions: `{sessions}`",
         f"- Training feature rows: `{training_rows}`",
         "- Old generic and v2 model bundles are not replaced.",
-        "- V3 specifically adds robustness coverage for click-based systematic bots and difficult human variants.",
+        "- V3 specifically adds robustness coverage for click-based systematic bots, bot.py-like real-browser direct-goto sessions, and difficult human variants.",
+        "- Raw telemetry-volume count features are excluded from v3 to avoid the shortcut that made an earlier v3 miss a mouse-noise direct-goto browser bot.",
         "",
         "## Leave-One-Site-Out Metrics",
         "",
@@ -141,7 +162,7 @@ def write_summary(
         "",
         "## Why V3 Exists",
         "",
-        "The v2 model caught direct-goto and browser mouse-noise bots, but the robustness evaluation showed that a click-based systematic bot could look human-like in navigation provenance alone. V3 keeps the interaction features and strengthens graph/timing/systematic traversal learning with the expanded robustness scenarios.",
+        "The v2 model caught direct-goto and browser mouse-noise bots, but the robustness evaluation showed that a click-based systematic bot could look human-like in navigation provenance alone. An early v3 overfit raw telemetry volume and missed the real `bot.py` direct-goto browser test, so the fixed v3 adds bot.py-like training sessions and uses provenance/anomaly ratios instead of raw event counts. V3 keeps the interaction features and strengthens graph/timing/systematic traversal learning with the expanded robustness scenarios.",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

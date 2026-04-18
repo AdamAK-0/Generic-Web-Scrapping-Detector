@@ -51,6 +51,9 @@ INTERACTION_V2_FEATURE_COLUMNS = [
     "interaction_free_navigation_ratio",
     "destination_without_precursor_ratio",
     "hover_on_target_link_ratio",
+    "clickless_navigation_score",
+    "causal_mismatch_score",
+    "browser_noise_without_click_score",
     "page_load_event_count",
     "page_type_dwell_residual_mean",
     "page_type_dwell_residual_max",
@@ -475,12 +478,24 @@ def extract_interaction_v2_features(
     meaningful_density = meaningful_event_count / max(1.0, float(len(paths)))
     low_meaningful_density = 1.0 - min(1.0, meaningful_density / 3.0)
     dwell_residual_score = min(1.0, dwell_stats["page_type_dwell_residual_mean"])
+    events_per_request = telemetry_event_count / max(1.0, float(len(paths)))
+    click_precursor_ratio = transition_stats["click_precursor_ratio"]
+    click_href_match_ratio = transition_stats["click_href_match_ratio"]
+    interaction_free_ratio = transition_stats["interaction_free_navigation_ratio"]
+    destination_without_precursor_ratio = transition_stats["destination_without_precursor_ratio"]
+    hover_on_target_link_ratio = transition_stats["hover_on_target_link_ratio"]
+    browser_noise_density = min(1.0, (mousemove_count + scroll_event_count) / max(1.0, float(len(paths)) * 3.0))
+    clickless_navigation_score = destination_without_precursor_ratio * (1.0 - click_precursor_ratio)
+    causal_mismatch_score = max(destination_without_precursor_ratio, 1.0 - click_href_match_ratio) * (
+        1.0 - min(1.0, click_precursor_ratio + 0.5 * hover_on_target_link_ratio)
+    )
+    browser_noise_without_click_score = browser_noise_density * clickless_navigation_score
 
     telemetry_anomaly = (
         0.30 * semantic_anomaly
         + 0.20 * dwell_residual_score
-        + 0.25 * transition_stats["interaction_free_navigation_ratio"]
-        + 0.15 * transition_stats["destination_without_precursor_ratio"]
+        + 0.25 * interaction_free_ratio
+        + 0.15 * destination_without_precursor_ratio
         + 0.10 * low_meaningful_density
     )
     if telemetry.empty:
@@ -494,7 +509,7 @@ def extract_interaction_v2_features(
 
     features = {
         "telemetry_event_count": telemetry_event_count,
-        "telemetry_events_per_request": telemetry_event_count / max(1.0, float(len(paths))),
+        "telemetry_events_per_request": events_per_request,
         "telemetry_missing_ratio": 1.0 if telemetry.empty else 0.0,
         "mousemove_count": mousemove_count,
         "scroll_event_count": scroll_event_count,
@@ -507,11 +522,14 @@ def extract_interaction_v2_features(
         "meaningful_event_density": meaningful_density,
         "time_to_first_interaction_seconds": first_interaction_seconds,
         "last_interaction_to_navigation_mean_seconds": transition_stats["last_interaction_to_navigation_mean_seconds"],
-        "click_precursor_ratio": transition_stats["click_precursor_ratio"],
-        "click_href_match_ratio": transition_stats["click_href_match_ratio"],
-        "interaction_free_navigation_ratio": transition_stats["interaction_free_navigation_ratio"],
-        "destination_without_precursor_ratio": transition_stats["destination_without_precursor_ratio"],
-        "hover_on_target_link_ratio": transition_stats["hover_on_target_link_ratio"],
+        "click_precursor_ratio": click_precursor_ratio,
+        "click_href_match_ratio": click_href_match_ratio,
+        "interaction_free_navigation_ratio": interaction_free_ratio,
+        "destination_without_precursor_ratio": destination_without_precursor_ratio,
+        "hover_on_target_link_ratio": hover_on_target_link_ratio,
+        "clickless_navigation_score": clickless_navigation_score,
+        "causal_mismatch_score": causal_mismatch_score,
+        "browser_noise_without_click_score": browser_noise_without_click_score,
         "page_load_event_count": page_load_event_count,
         "transition_human_nll": transition_nll,
         "semantic_transition_anomaly_score": semantic_anomaly,
