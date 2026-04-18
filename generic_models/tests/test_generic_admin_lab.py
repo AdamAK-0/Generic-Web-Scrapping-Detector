@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from generic_models.generic_admin_panel import (
     read_telemetry_frame,
     score_generic_sessions,
 )
+from generic_models.generic_traffic import BOT_MODES, build_plan
 from generic_models.site_catalog import build_all_generic_sites, get_websites, root_path
 from generic_models.visual_websites import render_visual_page
 
@@ -93,3 +95,23 @@ def test_visual_pages_include_local_interaction_telemetry() -> None:
     assert "navigator.sendBeacon(\"/telemetry\"" in html
     assert "experience-strip" in html
     assert "Graph transitions" in html
+
+
+def test_generic_traffic_has_robustness_bot_modes() -> None:
+    spec = get_websites()["atlas_shop"]
+    expected_modes = {
+        "bfs",
+        "dfs",
+        "random_walk",
+        "coverage_greedy",
+        "bursty_timing",
+        "browser_mouse_noise",
+        "direct_goto",
+        "click_based",
+    }
+
+    assert expected_modes.issubset(set(BOT_MODES))
+    for mode in expected_modes:
+        plan = build_plan(spec, mode=mode, rng=random.Random(7), max_steps=8)
+        assert plan[0] == root_path(spec.site_id)
+        assert len(plan) >= 3

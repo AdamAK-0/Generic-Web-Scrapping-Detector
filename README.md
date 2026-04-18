@@ -53,6 +53,20 @@ generic_models\scripts\train_interaction_v2_model.bat
 
 The v2 model is saved as `generic_models/artifacts/models/interaction_v2_generic_bundle.pkl` and appears in the admin model dropdown without replacing the original generic bundles.
 
+Interaction-aware v3 robustness model:
+
+```bat
+generic_models\scripts\train_interaction_v3_model.bat
+```
+
+The v3 model is saved as `generic_models/artifacts/models/interaction_v3_generic_bundle.pkl`. It keeps v2 intact and adds training coverage for BFS, DFS, random walk, coverage-greedy, bursty timing, browser mouse-noise, direct-goto, click-based bots, and harder human browsing variants.
+
+Robustness evaluation:
+
+```bat
+python -m generic_models.evaluate_interaction_robustness --model-name interaction_v3
+```
+
 ## Interaction-Aware Detection
 
 The generic admin demo now records local client telemetry from the four test websites. This adds defensive signals that server logs cannot see, including click-before-navigation, clicked destination match, destination-without-precursor, scroll/focus/keyboard density, page-type dwell residuals, and human transition likelihood. These signals are especially useful for browser-based bots that use direct `page.goto(...)` navigation with random cursor movement.

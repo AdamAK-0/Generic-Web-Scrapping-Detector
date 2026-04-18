@@ -905,7 +905,7 @@ def _load_default_model_if_available(state: GenericAdminState) -> None:
     models = discover_generic_model_bundles(state.model_dir)
     if not models:
         return
-    preferred = ["interaction_v2", "hist_gradient_boosting", "lightgbm", "random_forest", "xgboost", "logistic_regression"]
+    preferred = ["interaction_v3", "interaction_v2", "hist_gradient_boosting", "lightgbm", "random_forest", "xgboost", "logistic_regression"]
     selected = None
     for name in preferred:
         selected = next((model for model in models if model["model_name"] == name), None)

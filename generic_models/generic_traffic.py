@@ -16,7 +16,12 @@ BOT_MODES = [
     "dfs",
     "linear",
     "focused",
+    "coverage_greedy",
+    "bursty_timing",
     "browser_like",
+    "browser_mouse_noise",
+    "direct_goto",
+    "click_based",
     "noisy",
     "deep_harvest",
     "random_walk",
@@ -59,8 +64,20 @@ def build_plan(spec: WebsiteSpec, *, mode: str, rng: random.Random, max_steps: i
         return _cap([root_path(spec.site_id), *[page.path for page in pages if page.path != root_path(spec.site_id)]], max_steps)
     if mode == "focused":
         return _focused_plan(spec, rng=rng, max_steps=max_steps)
+    if mode == "coverage_greedy":
+        return _coverage_greedy_plan(spec, max_steps=max_steps)
+    if mode == "bursty_timing":
+        return _random_walk(spec, rng=rng, max_steps=max_steps, revisit_bias=0.12, jump_bias=0.05)
     if mode == "browser_like":
         return _random_walk(spec, rng=rng, max_steps=max_steps, revisit_bias=0.18, jump_bias=0.08)
+    if mode == "browser_mouse_noise":
+        return _random_walk(spec, rng=rng, max_steps=max_steps, revisit_bias=0.20, jump_bias=0.10)
+    if mode == "direct_goto":
+        pages = [page.path for page in spec.pages]
+        rng.shuffle(pages)
+        return _cap([root_path(spec.site_id), *[path for path in pages if path != root_path(spec.site_id)]], max_steps)
+    if mode == "click_based":
+        return _coverage_greedy_plan(spec, max_steps=max_steps)
     if mode == "noisy":
         return _random_walk(spec, rng=rng, max_steps=max_steps, revisit_bias=0.34, jump_bias=0.24)
     if mode == "deep_harvest":
@@ -74,7 +91,7 @@ def build_plan(spec: WebsiteSpec, *, mode: str, rng: random.Random, max_steps: i
 def run_plan(session: requests.Session, *, base_url: str, paths: list[str], mode: str, rng: random.Random, real_sleep: bool) -> None:
     previous_url = ""
     for path in paths:
-        headers = {"Referer": previous_url} if previous_url else {}
+        headers = {"Referer": previous_url} if previous_url and mode not in {"direct_goto"} else {}
         url = f"{base_url}{path}"
         try:
             response = session.get(url, headers=headers, timeout=8)
@@ -137,6 +154,27 @@ def _focused_plan(spec: WebsiteSpec, *, rng: random.Random, max_steps: int) -> l
     return _cap(result, max_steps)
 
 
+def _coverage_greedy_plan(spec: WebsiteSpec, *, max_steps: int) -> list[str]:
+    page_map = _page_map(spec)
+    root = root_path(spec.site_id)
+    current = root
+    visited = [current]
+    seen = {current}
+    while len(visited) < max_steps:
+        links = [link for link in page_map.get(current, PageSpec(current, current, "unknown", tuple(), "")).links if link in page_map]
+        unvisited = [link for link in links if link not in seen]
+        if unvisited:
+            current = max(unvisited, key=lambda path: (len([link for link in page_map[path].links if link not in seen]), _depth(path), path))
+        else:
+            remaining = [page.path for page in spec.pages if page.path not in seen]
+            if not remaining:
+                break
+            current = max(remaining, key=lambda path: (len(page_map[path].links), _depth(path), path))
+        visited.append(current)
+        seen.add(current)
+    return visited
+
+
 def _random_walk(spec: WebsiteSpec, *, rng: random.Random, max_steps: int, revisit_bias: float, jump_bias: float) -> list[str]:
     page_map = _page_map(spec)
     root = root_path(spec.site_id)
@@ -168,8 +206,12 @@ def _depth(path: str) -> int:
 
 
 def _delay_for_mode(mode: str, rng: random.Random) -> float:
-    if mode in {"browser_like", "random_walk"}:
+    if mode in {"browser_like", "browser_mouse_noise", "click_based", "random_walk"}:
         return rng.uniform(0.28, 1.15)
+    if mode == "bursty_timing":
+        return rng.choice([rng.uniform(0.03, 0.14), rng.uniform(1.8, 4.5)])
+    if mode == "direct_goto":
+        return rng.uniform(0.12, 0.50)
     if mode == "noisy":
         return rng.choice([rng.uniform(0.08, 0.35), rng.uniform(0.8, 1.8)])
     if mode == "focused":
