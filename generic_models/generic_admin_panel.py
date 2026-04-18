@@ -30,6 +30,36 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SESSION_TIMEOUT_SECONDS = 30 * 60
 MIN_EVENTS_TO_SCORE = 3
 MAX_PREFIX_TO_SCORE = 20
+MEANINGFUL_TELEMETRY_EVENTS = {"click", "pointerdown", "pointerup", "scroll", "keydown", "focus"}
+INTERACTION_V2_FEATURE_COLUMNS = [
+    "telemetry_event_count",
+    "telemetry_events_per_request",
+    "telemetry_missing_ratio",
+    "mousemove_count",
+    "scroll_event_count",
+    "scroll_burst_count",
+    "click_count",
+    "pointer_event_count",
+    "focus_count",
+    "keydown_count",
+    "meaningful_event_count",
+    "meaningful_event_density",
+    "time_to_first_interaction_seconds",
+    "last_interaction_to_navigation_mean_seconds",
+    "click_precursor_ratio",
+    "click_href_match_ratio",
+    "interaction_free_navigation_ratio",
+    "destination_without_precursor_ratio",
+    "hover_on_target_link_ratio",
+    "page_load_event_count",
+    "page_type_dwell_residual_mean",
+    "page_type_dwell_residual_max",
+    "page_type_dwell_cv",
+    "uniform_dwell_score",
+    "transition_human_nll",
+    "semantic_transition_anomaly_score",
+    "telemetry_anomaly_score",
+]
 
 
 class SelectGenericModelPayload(BaseModel):
@@ -62,6 +92,7 @@ class GenericAdminState:
     host: str = "127.0.0.1"
     threshold: float = 0.5
     session_timeout_seconds: float = DEFAULT_SESSION_TIMEOUT_SECONDS
+    telemetry_dir: Path | None = None
     bot_run_dir: Path = Path("generic_models/admin_bot_runs")
     sites: dict[str, WebsiteSpec] = field(default_factory=get_websites)
     generic_sites: dict[str, GenericSite] = field(default_factory=build_all_generic_sites)
@@ -69,6 +100,10 @@ class GenericAdminState:
     active_bundle: dict[str, Any] | None = None
     bot_runs: list[GenericBotRun] = field(default_factory=list)
     ignore_log_before_timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.telemetry_dir is None:
+            self.telemetry_dir = self.log_dir.parent / "live_telemetry"
 
     def load_model(self, model_name: str, threshold: float | None = None) -> dict[str, Any]:
         models = discover_generic_model_bundles(self.model_dir)
@@ -197,11 +232,12 @@ def score_live_logs(state: GenericAdminState) -> dict[str, Any]:
         issues.append(f"No generic model bundle loaded from: {state.model_dir}")
 
     raw_df = read_generic_log_frame(state.log_dir, ignore_before=state.ignore_log_before_timestamp)
+    telemetry_df = read_telemetry_frame(state.telemetry_dir or state.log_dir.parent / "live_telemetry", ignore_before=state.ignore_log_before_timestamp)
     sessions = build_sessions_from_log_frame(raw_df, state=state)
     session_rows = []
     if state.active_bundle is not None:
         try:
-            session_rows = score_generic_sessions(sessions, state=state)
+            session_rows = score_generic_sessions(sessions, state=state, telemetry_df=telemetry_df)
         except Exception as exc:  # pragma: no cover - defensive dashboard message
             issues.append(f"Could not score generic live sessions: {exc}")
 
@@ -216,7 +252,7 @@ def score_live_logs(state: GenericAdminState) -> dict[str, Any]:
         "sessions": session_rows,
         "bot_runs": [generic_bot_run_to_public_dict(run) for run in state.bot_runs[-6:]][::-1],
         "updated_at": time.time(),
-        "paths": {"log_dir": str(state.log_dir), "model_dir": str(state.model_dir)},
+        "paths": {"log_dir": str(state.log_dir), "telemetry_dir": str(state.telemetry_dir), "model_dir": str(state.model_dir)},
     }
 
 
@@ -247,6 +283,51 @@ def read_generic_log_frame(log_dir: str | Path, *, ignore_before: float = 0.0) -
                         "path": str(record.get("path", "")),
                         "status_code": int(record.get("status_code", 0) or 0),
                         "referrer": str(record.get("referrer", "")),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def read_telemetry_frame(telemetry_dir: str | Path, *, ignore_before: float = 0.0) -> pd.DataFrame:
+    root = Path(telemetry_dir)
+    rows: list[dict[str, Any]] = []
+    if not root.exists():
+        return pd.DataFrame(rows)
+    for path in sorted(root.glob("*.jsonl")):
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                received_at = float(record.get("received_at", 0.0) or 0.0)
+                ts_ms = float(record.get("ts", 0.0) or 0.0)
+                ts_seconds = ts_ms / 1000.0 if ts_ms > 10_000_000_000 else (ts_ms or received_at)
+                if ignore_before > 0 and max(received_at, ts_seconds) < ignore_before:
+                    continue
+                rows.append(
+                    {
+                        "received_at": received_at,
+                        "timestamp": ts_seconds,
+                        "site_id": str(record.get("site_id", path.stem)),
+                        "ip": str(record.get("ip", "")),
+                        "user_agent": str(record.get("user_agent", "")),
+                        "sid": str(record.get("sid", "")),
+                        "page_id": str(record.get("page_id", "")),
+                        "type": str(record.get("type", "")),
+                        "path": str(record.get("path", "")),
+                        "href": str(record.get("href", "")),
+                        "target_href": str(record.get("target_href", "")),
+                        "tag": str(record.get("tag", "")),
+                        "x": float(record.get("x", 0.0) or 0.0),
+                        "y": float(record.get("y", 0.0) or 0.0),
+                        "scroll_y": float(record.get("scroll_y", 0.0) or 0.0),
+                        "scroll_ratio": float(record.get("scroll_ratio", 0.0) or 0.0),
+                        "interactive_count": float(record.get("interactive_count", 0.0) or 0.0),
+                        "content_length": float(record.get("content_length", 0.0) or 0.0),
                     }
                 )
     return pd.DataFrame(rows)
@@ -300,7 +381,12 @@ def build_sessions_from_log_frame(raw_df: pd.DataFrame, *, state: GenericAdminSt
     return sessions
 
 
-def score_generic_sessions(sessions: list[GenericSession], *, state: GenericAdminState) -> list[dict[str, Any]]:
+def score_generic_sessions(
+    sessions: list[GenericSession],
+    *,
+    state: GenericAdminState,
+    telemetry_df: pd.DataFrame | None = None,
+) -> list[dict[str, Any]]:
     if state.active_bundle is None:
         return []
     feature_columns = list(state.active_bundle.get("feature_columns", []))
@@ -317,6 +403,7 @@ def score_generic_sessions(sessions: list[GenericSession], *, state: GenericAdmi
             prefix_len = min(len(session.paths), MAX_PREFIX_TO_SCORE)
             features = extract_generic_features(session, site, prefix_len=prefix_len)
             features["prefix_len"] = float(prefix_len)
+            features.update(extract_interaction_v2_features(session, site, prefix_len=prefix_len, telemetry_df=telemetry_df))
             frame = pd.DataFrame([{column: float(features.get(column, 0.0)) for column in feature_columns}])
             score = float(predict_proba(model, frame)[0])
         predicted_label = "waiting"
@@ -347,10 +434,290 @@ def score_generic_sessions(sessions: list[GenericSession], *, state: GenericAdmi
                 "navigation_entropy_generic_score": _round_feature(features.get("navigation_entropy_generic_score")),
                 "graph_distance_mean": _round_feature(features.get("graph_distance_mean")),
                 "backtrack_ratio": _round_feature(features.get("backtrack_ratio")),
+                "telemetry_anomaly_score": _round_feature(features.get("telemetry_anomaly_score")),
+                "click_precursor_ratio": _round_feature(features.get("click_precursor_ratio")),
+                "destination_without_precursor_ratio": _round_feature(features.get("destination_without_precursor_ratio")),
+                "meaningful_event_density": _round_feature(features.get("meaningful_event_density")),
             }
         )
     rows.sort(key=lambda row: (row["bot_probability"] is not None, row["bot_probability"] or -1.0, row["event_count"]), reverse=True)
     return rows
+
+
+def extract_interaction_v2_features(
+    session: GenericSession,
+    site: GenericSite,
+    *,
+    prefix_len: int,
+    telemetry_df: pd.DataFrame | None = None,
+) -> dict[str, float]:
+    """Extract interaction/provenance features for the v2 generic detector."""
+
+    paths = session.paths[:prefix_len]
+    timestamps = session.timestamps[:prefix_len]
+    telemetry = _telemetry_for_session(telemetry_df, session, prefix_len=prefix_len)
+    type_counts = telemetry["type"].value_counts().to_dict() if not telemetry.empty else {}
+
+    telemetry_event_count = float(len(telemetry))
+    mousemove_count = float(type_counts.get("mousemove", 0))
+    scroll_event_count = float(type_counts.get("scroll", 0))
+    click_count = float(type_counts.get("click", 0))
+    pointer_event_count = float(type_counts.get("pointerdown", 0) + type_counts.get("pointerup", 0))
+    focus_count = float(type_counts.get("focus", 0))
+    keydown_count = float(type_counts.get("keydown", 0))
+    page_load_event_count = float(type_counts.get("page_load", 0))
+    meaningful_event_count = float(sum(type_counts.get(event_type, 0) for event_type in MEANINGFUL_TELEMETRY_EVENTS))
+
+    transition_stats = _transition_provenance_stats(paths, timestamps, telemetry)
+    dwell_stats = _page_type_dwell_stats(paths, timestamps, site)
+    transition_nll = _transition_human_nll(paths, site)
+    semantic_anomaly = min(1.0, transition_nll / 4.0)
+    meaningful_density = meaningful_event_count / max(1.0, float(len(paths)))
+    low_meaningful_density = 1.0 - min(1.0, meaningful_density / 3.0)
+    dwell_residual_score = min(1.0, dwell_stats["page_type_dwell_residual_mean"])
+
+    telemetry_anomaly = (
+        0.30 * semantic_anomaly
+        + 0.20 * dwell_residual_score
+        + 0.25 * transition_stats["interaction_free_navigation_ratio"]
+        + 0.15 * transition_stats["destination_without_precursor_ratio"]
+        + 0.10 * low_meaningful_density
+    )
+    if telemetry.empty:
+        telemetry_anomaly = max(telemetry_anomaly, 0.72)
+
+    first_interaction_seconds = 0.0
+    if not telemetry.empty and timestamps:
+        meaningful = telemetry[telemetry["type"].isin(MEANINGFUL_TELEMETRY_EVENTS)]
+        if not meaningful.empty:
+            first_interaction_seconds = max(0.0, float(meaningful["timestamp"].min()) - float(timestamps[0]))
+
+    features = {
+        "telemetry_event_count": telemetry_event_count,
+        "telemetry_events_per_request": telemetry_event_count / max(1.0, float(len(paths))),
+        "telemetry_missing_ratio": 1.0 if telemetry.empty else 0.0,
+        "mousemove_count": mousemove_count,
+        "scroll_event_count": scroll_event_count,
+        "scroll_burst_count": _scroll_burst_count(telemetry),
+        "click_count": click_count,
+        "pointer_event_count": pointer_event_count,
+        "focus_count": focus_count,
+        "keydown_count": keydown_count,
+        "meaningful_event_count": meaningful_event_count,
+        "meaningful_event_density": meaningful_density,
+        "time_to_first_interaction_seconds": first_interaction_seconds,
+        "last_interaction_to_navigation_mean_seconds": transition_stats["last_interaction_to_navigation_mean_seconds"],
+        "click_precursor_ratio": transition_stats["click_precursor_ratio"],
+        "click_href_match_ratio": transition_stats["click_href_match_ratio"],
+        "interaction_free_navigation_ratio": transition_stats["interaction_free_navigation_ratio"],
+        "destination_without_precursor_ratio": transition_stats["destination_without_precursor_ratio"],
+        "hover_on_target_link_ratio": transition_stats["hover_on_target_link_ratio"],
+        "page_load_event_count": page_load_event_count,
+        "transition_human_nll": transition_nll,
+        "semantic_transition_anomaly_score": semantic_anomaly,
+        "telemetry_anomaly_score": float(max(0.0, min(1.0, telemetry_anomaly))),
+    }
+    features.update(dwell_stats)
+    return features
+
+
+def _telemetry_for_session(telemetry_df: pd.DataFrame | None, session: GenericSession, *, prefix_len: int) -> pd.DataFrame:
+    if telemetry_df is None or telemetry_df.empty or not session.timestamps:
+        return pd.DataFrame()
+    start = float(session.timestamps[0]) - 2.0
+    end = float(session.timestamps[min(prefix_len, len(session.timestamps)) - 1]) + 8.0
+    rows = telemetry_df[
+        (telemetry_df["site_id"] == session.site_id)
+        & (telemetry_df["timestamp"] >= start)
+        & (telemetry_df["timestamp"] <= end)
+    ].copy()
+    if rows.empty:
+        return rows
+    prefix_paths = set(session.paths[:prefix_len])
+    rows = rows[rows["path"].isin(prefix_paths)]
+    return rows.sort_values("timestamp").reset_index(drop=True)
+
+
+def _transition_provenance_stats(paths: list[str], timestamps: list[float], telemetry: pd.DataFrame) -> dict[str, float]:
+    if len(paths) < 2:
+        return {
+            "click_precursor_ratio": 0.0,
+            "click_href_match_ratio": 0.0,
+            "interaction_free_navigation_ratio": 0.0,
+            "destination_without_precursor_ratio": 0.0,
+            "hover_on_target_link_ratio": 0.0,
+            "last_interaction_to_navigation_mean_seconds": 0.0,
+        }
+    if telemetry.empty:
+        return {
+            "click_precursor_ratio": 0.0,
+            "click_href_match_ratio": 0.0,
+            "interaction_free_navigation_ratio": 1.0,
+            "destination_without_precursor_ratio": 1.0,
+            "hover_on_target_link_ratio": 0.0,
+            "last_interaction_to_navigation_mean_seconds": 0.0,
+        }
+
+    click_precursors = 0
+    click_href_matches = 0
+    interaction_free = 0
+    destination_without_precursor = 0
+    hover_matches = 0
+    last_interaction_gaps: list[float] = []
+    for src, dst, start, end in zip(paths[:-1], paths[1:], timestamps[:-1], timestamps[1:]):
+        window = telemetry[
+            (telemetry["path"] == src)
+            & (telemetry["timestamp"] >= float(start) - 0.5)
+            & (telemetry["timestamp"] <= float(end) + 0.75)
+        ]
+        clickish = window[window["type"].isin(["click", "pointerdown"])]
+        meaningful = window[window["type"].isin(MEANINGFUL_TELEMETRY_EVENTS)]
+        href_columns = []
+        if not clickish.empty:
+            href_columns.extend(str(value) for value in clickish.get("href", pd.Series(dtype=str)).tolist())
+            href_columns.extend(str(value) for value in clickish.get("target_href", pd.Series(dtype=str)).tolist())
+        hoverish = window[window["type"] == "mousemove"]
+        hover_hrefs = [str(value) for value in hoverish.get("target_href", pd.Series(dtype=str)).tolist()]
+
+        has_click = not clickish.empty
+        has_matching_click = any(_same_path(href, dst) for href in href_columns)
+        has_matching_hover = any(_same_path(href, dst) for href in hover_hrefs)
+        if has_click:
+            click_precursors += 1
+        if has_matching_click:
+            click_href_matches += 1
+        if has_matching_hover:
+            hover_matches += 1
+        if meaningful.empty:
+            interaction_free += 1
+        else:
+            last_interaction_gaps.append(max(0.0, float(end) - float(meaningful["timestamp"].max())))
+        if not has_matching_click:
+            destination_without_precursor += 1
+
+    total = max(1, len(paths) - 1)
+    return {
+        "click_precursor_ratio": click_precursors / total,
+        "click_href_match_ratio": click_href_matches / total,
+        "interaction_free_navigation_ratio": interaction_free / total,
+        "destination_without_precursor_ratio": destination_without_precursor / total,
+        "hover_on_target_link_ratio": hover_matches / total,
+        "last_interaction_to_navigation_mean_seconds": sum(last_interaction_gaps) / len(last_interaction_gaps) if last_interaction_gaps else 0.0,
+    }
+
+
+def _page_type_dwell_stats(paths: list[str], timestamps: list[float], site: GenericSite) -> dict[str, float]:
+    deltas = [max(0.0, b - a) for a, b in zip(timestamps[:-1], timestamps[1:])]
+    residuals: list[float] = []
+    for path, dwell in zip(paths[:-1], deltas):
+        category = str(site.graph.nodes[path].get("category", "listing")) if path in site.graph else "listing"
+        expected = _expected_dwell_seconds(category)
+        residuals.append(min(1.0, abs(float(dwell) - expected) / max(1.0, expected)))
+    mean_dwell = sum(deltas) / len(deltas) if deltas else 0.0
+    if len(deltas) >= 2 and mean_dwell > 0:
+        variance = sum((delta - mean_dwell) ** 2 for delta in deltas) / len(deltas)
+        dwell_cv = math.sqrt(variance) / mean_dwell
+    else:
+        dwell_cv = 0.0
+    return {
+        "page_type_dwell_residual_mean": sum(residuals) / len(residuals) if residuals else 0.0,
+        "page_type_dwell_residual_max": max(residuals) if residuals else 0.0,
+        "page_type_dwell_cv": dwell_cv,
+        "uniform_dwell_score": max(0.0, 1.0 - min(1.0, dwell_cv / 0.55)) if len(deltas) >= 3 else 0.0,
+    }
+
+
+def _transition_human_nll(paths: list[str], site: GenericSite) -> float:
+    if len(paths) < 2:
+        return 0.0
+    nll = []
+    for src, dst in zip(paths[:-1], paths[1:]):
+        src_category = str(site.graph.nodes[src].get("category", "listing")) if src in site.graph else "listing"
+        dst_category = str(site.graph.nodes[dst].get("category", "listing")) if dst in site.graph else "listing"
+        probability = _human_transition_probability(_coarse_category(src_category), _coarse_category(dst_category))
+        if src in site.graph and dst not in site.graph.successors(src):
+            probability *= 0.15
+        if src == dst:
+            probability *= 0.50
+        nll.append(-math.log(max(0.01, min(0.95, probability))))
+    return sum(nll) / len(nll)
+
+
+def _human_transition_probability(src: str, dst: str) -> float:
+    table = {
+        ("home", "listing"): 0.34,
+        ("home", "utility"): 0.18,
+        ("home", "terminal"): 0.06,
+        ("home", "content"): 0.14,
+        ("listing", "content"): 0.40,
+        ("listing", "listing"): 0.16,
+        ("listing", "home"): 0.14,
+        ("listing", "utility"): 0.12,
+        ("listing", "terminal"): 0.06,
+        ("content", "listing"): 0.24,
+        ("content", "content"): 0.20,
+        ("content", "utility"): 0.09,
+        ("content", "terminal"): 0.10,
+        ("content", "home"): 0.07,
+        ("utility", "listing"): 0.22,
+        ("utility", "content"): 0.18,
+        ("utility", "home"): 0.20,
+        ("utility", "terminal"): 0.10,
+        ("terminal", "home"): 0.30,
+        ("terminal", "listing"): 0.08,
+        ("terminal", "content"): 0.05,
+        ("terminal", "utility"): 0.12,
+    }
+    return table.get((src, dst), 0.04)
+
+
+def _coarse_category(category: str) -> str:
+    category = category.lower()
+    if category == "home":
+        return "home"
+    if category in {"listing"}:
+        return "listing"
+    if category in {"detail", "docs", "article"}:
+        return "content"
+    if category in {"cart", "contact", "terminal"}:
+        return "terminal"
+    return "utility"
+
+
+def _expected_dwell_seconds(category: str) -> float:
+    category = category.lower()
+    if category == "home":
+        return 12.0
+    if category == "listing":
+        return 18.0
+    if category in {"detail", "article", "docs"}:
+        return 34.0
+    if category in {"cart", "contact", "terminal"}:
+        return 26.0
+    return 15.0
+
+
+def _scroll_burst_count(telemetry: pd.DataFrame) -> float:
+    if telemetry.empty:
+        return 0.0
+    scroll_times = sorted(float(value) for value in telemetry[telemetry["type"] == "scroll"]["timestamp"].tolist())
+    if not scroll_times:
+        return 0.0
+    bursts = 1
+    previous = scroll_times[0]
+    for timestamp in scroll_times[1:]:
+        if timestamp - previous > 1.2:
+            bursts += 1
+        previous = timestamp
+    return float(bursts)
+
+
+def _same_path(candidate: str, expected: str) -> bool:
+    if not candidate:
+        return False
+    candidate = candidate.split("?", 1)[0].rstrip("/") or "/"
+    expected = expected.split("?", 1)[0].rstrip("/") or "/"
+    return candidate == expected
 
 
 def launch_generic_bot_run(
@@ -406,12 +773,19 @@ def reset_generic_live_view(state: GenericAdminState) -> dict[str, Any]:
     state.log_dir.mkdir(parents=True, exist_ok=True)
     for site_id in state.sites:
         (state.log_dir / f"{site_id}.jsonl").write_text("", encoding="utf-8")
+    telemetry_dir = state.telemetry_dir or state.log_dir.parent / "live_telemetry"
+    if telemetry_dir.exists():
+        for path in telemetry_dir.glob("*.jsonl"):
+            path.unlink()
+    telemetry_dir.mkdir(parents=True, exist_ok=True)
+    for site_id in state.sites:
+        (telemetry_dir / f"{site_id}.jsonl").write_text("", encoding="utf-8")
     if state.bot_run_dir.exists():
         shutil.rmtree(state.bot_run_dir)
     state.bot_run_dir.mkdir(parents=True, exist_ok=True)
     state.bot_runs.clear()
     state.ignore_log_before_timestamp = time.time()
-    return {"ok": True, "message": "Generic live logs and panel bot-run history were cleared."}
+    return {"ok": True, "message": "Generic live logs, telemetry, and panel bot-run history were cleared."}
 
 
 def summarize_scored_sessions(rows: list[dict[str, Any]], *, threshold: float) -> dict[str, Any]:
@@ -531,7 +905,7 @@ def _load_default_model_if_available(state: GenericAdminState) -> None:
     models = discover_generic_model_bundles(state.model_dir)
     if not models:
         return
-    preferred = ["hist_gradient_boosting", "lightgbm", "random_forest", "xgboost", "logistic_regression"]
+    preferred = ["interaction_v2", "hist_gradient_boosting", "lightgbm", "random_forest", "xgboost", "logistic_regression"]
     selected = None
     for name in preferred:
         selected = next((model for model in models if model["model_name"] == name), None)
@@ -1110,6 +1484,7 @@ DASHBOARD_HTML = r"""
             <strong>${row.bot_probability_pct === null ? "..." : prob + "%"}</strong>
             <div class="small">generic entropy: ${row.navigation_entropy_generic_score ?? "n/a"}</div>
             <div class="small">coverage: ${row.coverage_ratio ?? "n/a"} / revisit: ${row.revisit_rate ?? "n/a"}</div>
+            <div class="small">telemetry anomaly: ${row.telemetry_anomaly_score ?? "n/a"}</div>
           </div>
           <div>
             <span class="badge ${badgeClass}">${label}</span>

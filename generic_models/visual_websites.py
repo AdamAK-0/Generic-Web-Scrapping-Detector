@@ -23,6 +23,7 @@ def render_visual_page(spec: WebsiteSpec, page: PageSpec) -> str:
   <style>{_css(spec)}</style>
 </head>
 <body class="{_e(spec.site_id)}">
+  <div class="ambient-layer" aria-hidden="true"><i></i><i></i><i></i></div>
   <header class="site-nav">
     <a class="brand" href="{_e(root_path(spec.site_id))}">
       <span class="brand-mark"></span>
@@ -33,8 +34,10 @@ def render_visual_page(spec: WebsiteSpec, page: PageSpec) -> str:
   </header>
   <main>
     {content}
+    {_experience_strip(spec, page)}
     {transitions}
   </main>
+  <script>{_telemetry_script()}</script>
 </body>
 </html>"""
 
@@ -203,6 +206,31 @@ def _transition_panel(page: PageSpec) -> str:
     </section>"""
 
 
+def _experience_strip(spec: WebsiteSpec, page: PageSpec) -> str:
+    """Small visual polish layer that also explains what the detector observes."""
+
+    link_count = len(page.links)
+    category = page.category.replace("_", " ").title()
+    return f"""
+    <section class="experience-strip">
+      <article>
+        <span>Page role</span>
+        <strong>{_e(category)}</strong>
+        <small>Structural node type used by the generic graph model.</small>
+      </article>
+      <article>
+        <span>Outgoing choices</span>
+        <strong>{link_count}</strong>
+        <small>Branching pressure for entropy and transition analysis.</small>
+      </article>
+      <article>
+        <span>Graph shape</span>
+        <strong>{_e(spec.shape)}</strong>
+        <small>Same edges as the research graph, presented as a real site.</small>
+      </article>
+    </section>"""
+
+
 def _nav(spec: WebsiteSpec) -> str:
     root = root_path(spec.site_id)
     root_page = next(page for page in spec.pages if page.path == root)
@@ -318,6 +346,103 @@ def _e(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _telemetry_script() -> str:
+    """Client-side interaction telemetry used only by the local generic demo."""
+
+    return r"""
+(() => {
+  const sidKey = "generic_wsd_sid";
+  const makeId = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now() + "-" + Math.random());
+  const pageId = makeId();
+  const sid = sessionStorage.getItem(sidKey) || makeId();
+  sessionStorage.setItem(sidKey, sid);
+  let buffer = [];
+  let lastMove = 0;
+  let lastScroll = 0;
+
+  function normalizeHref(href) {
+    if (!href) return null;
+    try { return new URL(href, location.href).pathname; }
+    catch (_) { return href; }
+  }
+
+  function log(type, extra = {}) {
+    buffer.push({
+      sid,
+      page_id: pageId,
+      type,
+      ts: Date.now(),
+      path: location.pathname,
+      title: document.title,
+      ...extra
+    });
+    if (buffer.length >= 35) flush();
+  }
+
+  function flush() {
+    if (!buffer.length) return;
+    const payload = JSON.stringify(buffer.splice(0, buffer.length));
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/telemetry", payload);
+      return;
+    }
+    fetch("/telemetry", { method: "POST", headers: {"Content-Type": "application/json"}, body: payload, keepalive: true }).catch(() => {});
+  }
+
+  log("page_load", {
+    referrer: document.referrer || "",
+    interactive_count: document.querySelectorAll("a,button,input,textarea,select").length,
+    content_length: document.body.innerText.length
+  });
+
+  document.addEventListener("mousemove", event => {
+    const now = Date.now();
+    if (now - lastMove < 220) return;
+    lastMove = now;
+    const target = event.target.closest ? event.target.closest("a,button,input,textarea,select") : null;
+    log("mousemove", { x: event.clientX, y: event.clientY, target_tag: target ? target.tagName : null, target_href: target && target.href ? normalizeHref(target.href) : null });
+  }, { passive: true });
+
+  document.addEventListener("pointerdown", event => {
+    const target = event.target.closest ? event.target.closest("a,button,input,textarea,select") : null;
+    log("pointerdown", { x: event.clientX, y: event.clientY, target_tag: target ? target.tagName : event.target.tagName, target_href: target && target.href ? normalizeHref(target.href) : null });
+  }, true);
+
+  document.addEventListener("pointerup", event => {
+    const target = event.target.closest ? event.target.closest("a,button,input,textarea,select") : null;
+    log("pointerup", { x: event.clientX, y: event.clientY, target_tag: target ? target.tagName : event.target.tagName, target_href: target && target.href ? normalizeHref(target.href) : null });
+  }, true);
+
+  document.addEventListener("click", event => {
+    const link = event.target.closest ? event.target.closest("a") : null;
+    log("click", {
+      x: event.clientX,
+      y: event.clientY,
+      tag: event.target.tagName,
+      href: link ? normalizeHref(link.href || link.getAttribute("href")) : null,
+      text: (event.target.innerText || event.target.value || "").slice(0, 90)
+    });
+    flush();
+  }, true);
+
+  document.addEventListener("scroll", () => {
+    const now = Date.now();
+    if (now - lastScroll < 260) return;
+    lastScroll = now;
+    log("scroll", { y: window.scrollY, ratio: Math.round((window.scrollY / Math.max(1, document.body.scrollHeight - innerHeight)) * 1000) / 1000 });
+  }, { passive: true });
+
+  document.addEventListener("keydown", event => log("keydown", { key: event.key, tag: event.target.tagName }), true);
+  document.addEventListener("focusin", event => log("focus", { tag: event.target.tagName, id: event.target.id || null, name: event.target.name || null }), true);
+  window.addEventListener("blur", () => log("blur"));
+  document.addEventListener("visibilitychange", () => log("visibilitychange", { state: document.visibilityState }));
+  window.addEventListener("pagehide", () => { log("page_unload"); flush(); });
+  window.addEventListener("beforeunload", () => { log("page_unload"); flush(); });
+  setInterval(flush, 3000);
+})();
+"""
+
+
 def _css(spec: WebsiteSpec) -> str:
     return f"""
     :root {{
@@ -340,6 +465,38 @@ def _css(spec: WebsiteSpec) -> str:
         radial-gradient(circle at 88% 8%, rgba(240, 173, 53, 0.18), transparent 26rem),
         linear-gradient(135deg, #fff8ea 0%, #eef8f4 54%, #f7e4d4 100%);
     }}
+    body::before {{
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .22;
+      background-image:
+        linear-gradient(rgba(16, 35, 49, .08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 35, 49, .08) 1px, transparent 1px);
+      background-size: 52px 52px;
+      mask-image: linear-gradient(to bottom, black, transparent 82%);
+    }}
+    .ambient-layer {{
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: -1;
+    }}
+    .ambient-layer i {{
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      border-radius: 42%;
+      filter: blur(6px);
+      opacity: .25;
+      background: linear-gradient(135deg, var(--accent), #f0ad35);
+      animation: drift 18s ease-in-out infinite alternate;
+    }}
+    .ambient-layer i:nth-child(1) {{ left: -60px; top: 28%; }}
+    .ambient-layer i:nth-child(2) {{ right: 10%; top: 18%; animation-delay: -5s; transform: scale(.72) rotate(18deg); }}
+    .ambient-layer i:nth-child(3) {{ right: -80px; bottom: 4%; animation-delay: -9s; transform: scale(1.12) rotate(-12deg); }}
     a {{ color: inherit; }}
     .site-nav {{
       position: sticky;
@@ -403,6 +560,13 @@ def _css(spec: WebsiteSpec) -> str:
     .price-row strong {{ font-size: 54px; letter-spacing: -.06em; margin-right: 8px; }}
     .cards, .doc-grid, .story-grid, .support-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-top: 18px; }}
     .product-card, .doc-card, .story-card, .support-card {{ display: grid; gap: 10px; min-height: 210px; border-radius: 28px; padding: 18px; text-decoration: none; color: var(--ink); }}
+    .product-card, .doc-card, .story-card, .support-card, .link-card, .topic-chip, .button {{
+      transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+    }}
+    .product-card:hover, .doc-card:hover, .story-card:hover, .support-card:hover, .link-card:hover {{
+      transform: translateY(-4px);
+      box-shadow: 0 24px 60px rgba(17, 44, 61, .16);
+    }}
     .product-image {{ width: 76px; height: 76px; border-radius: 24px; color: #fff; display: grid; place-items: center; background: linear-gradient(135deg, var(--accent), #f0ad35); font-weight: 950; }}
     .product-card b {{ font-size: 28px; letter-spacing: -.04em; }}
     .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }}
@@ -426,12 +590,58 @@ def _css(spec: WebsiteSpec) -> str:
     input, textarea {{ width: 100%; border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin: 10px 0; font: inherit; background: rgba(255,255,255,.78); }}
     .steps {{ color: var(--muted); line-height: 2; }}
     .transition-panel {{ margin-top: 18px; border-radius: 34px; padding: 24px; display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 22px; }}
+    .experience-strip {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }}
+    .experience-strip article {{
+      position: relative;
+      overflow: hidden;
+      min-height: 130px;
+      border-radius: 28px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .58);
+      box-shadow: 0 18px 48px rgba(17, 44, 61, .10);
+    }}
+    .experience-strip article::after {{
+      content: "";
+      position: absolute;
+      right: -34px;
+      top: -34px;
+      width: 98px;
+      height: 98px;
+      border-radius: 32px;
+      background: var(--accent);
+      opacity: .16;
+      transform: rotate(16deg);
+    }}
+    .experience-strip span {{
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }}
+    .experience-strip strong {{
+      display: block;
+      margin: 12px 0 8px;
+      font-size: clamp(26px, 3vw, 42px);
+      line-height: .92;
+      letter-spacing: -.06em;
+    }}
     .link-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }}
     .link-card {{ display: grid; gap: 6px; text-decoration: none; padding: 15px; border-radius: 20px; color: var(--ink); background: rgba(255,255,255,.66); border: 1px solid var(--line); font-weight: 950; }}
     .link-card small, small {{ color: var(--muted); font-weight: 700; }}
     @media (max-width: 920px) {{
-      .site-nav, .commerce-hero, .docs-hero, .news-hero, .support-hero, .docs-layout, .article-shell, .support-article, .transition-panel, .two-col {{ grid-template-columns: 1fr; }}
+      .site-nav, .commerce-hero, .docs-hero, .news-hero, .support-hero, .docs-layout, .article-shell, .support-article, .transition-panel, .two-col, .experience-strip {{ grid-template-columns: 1fr; }}
       .graph-pill {{ display: none; }}
       .site-nav {{ align-items: flex-start; flex-direction: column; }}
+    }}
+    @keyframes drift {{
+      from {{ transform: translate3d(0, 0, 0) rotate(0deg); }}
+      to {{ transform: translate3d(28px, -24px, 0) rotate(22deg); }}
     }}
     """

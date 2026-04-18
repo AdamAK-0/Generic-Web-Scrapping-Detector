@@ -7,6 +7,7 @@ __pycache__/
 
 # Runtime logs and local demo output
 generic_models/live_logs/
+generic_models/live_telemetry/
 generic_models/admin_bot_runs/
 generic_models/live_graphs/
 catboost_info/

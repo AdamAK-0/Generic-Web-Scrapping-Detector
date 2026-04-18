@@ -6,8 +6,15 @@ from pathlib import Path
 
 import numpy as np
 
-from generic_models.generic_admin_panel import GenericAdminState, build_sessions_from_log_frame, read_generic_log_frame, score_generic_sessions
+from generic_models.generic_admin_panel import (
+    GenericAdminState,
+    build_sessions_from_log_frame,
+    read_generic_log_frame,
+    read_telemetry_frame,
+    score_generic_sessions,
+)
 from generic_models.site_catalog import build_all_generic_sites, get_websites, root_path
+from generic_models.visual_websites import render_visual_page
 
 
 class ConstantModel:
@@ -44,21 +51,45 @@ def test_generic_live_log_sessionizes_and_scores(tmp_path: Path) -> None:
         for event in events:
             handle.write(json.dumps(event) + "\n")
 
-    state = GenericAdminState(model_dir=tmp_path / "models", log_dir=log_dir)
+    telemetry_dir = tmp_path / "live_telemetry"
+    telemetry_dir.mkdir()
+    telemetry_events = [
+        {"received_at": now + 0.4, "site_id": site_id, "type": "click", "ts": (now + 0.4) * 1000, "path": root_path(site_id), "href": "/catalog"},
+        {"received_at": now + 1.3, "site_id": site_id, "type": "click", "ts": (now + 1.3) * 1000, "path": "/catalog", "href": "/catalog/water"},
+        {"received_at": now + 1.5, "site_id": site_id, "type": "scroll", "ts": (now + 1.5) * 1000, "path": "/catalog"},
+    ]
+    with (telemetry_dir / f"{site_id}.jsonl").open("w", encoding="utf-8") as handle:
+        for event in telemetry_events:
+            handle.write(json.dumps(event) + "\n")
+
+    state = GenericAdminState(model_dir=tmp_path / "models", log_dir=log_dir, telemetry_dir=telemetry_dir)
     state.active_bundle = {
         "model": ConstantModel(),
-        "feature_columns": ["prefix_len", "coverage_ratio", "path_entropy", "revisit_rate", "graph_distance_mean"],
+        "feature_columns": ["prefix_len", "coverage_ratio", "path_entropy", "revisit_rate", "graph_distance_mean", "telemetry_anomaly_score"],
         "threshold": 0.5,
     }
     state.active_model_name = "constant"
     state.threshold = 0.5
 
     frame = read_generic_log_frame(log_dir)
+    telemetry_frame = read_telemetry_frame(telemetry_dir)
     sessions = build_sessions_from_log_frame(frame, state=state)
-    rows = score_generic_sessions(sessions, state=state)
+    rows = score_generic_sessions(sessions, state=state, telemetry_df=telemetry_frame)
 
     assert len(sessions) == 1
     assert sessions[0].paths[0] == root_path(site_id)
     assert rows[0]["site_name"] == spec.name
     assert rows[0]["predicted_label"] == "bot"
     assert rows[0]["bot_probability_pct"] == 82
+    assert rows[0]["click_precursor_ratio"] > 0
+    assert rows[0]["telemetry_anomaly_score"] is not None
+
+
+def test_visual_pages_include_local_interaction_telemetry() -> None:
+    spec = get_websites()["atlas_shop"]
+    page = next(page for page in spec.pages if page.path == root_path(spec.site_id))
+    html = render_visual_page(spec, page)
+
+    assert "navigator.sendBeacon(\"/telemetry\"" in html
+    assert "experience-strip" in html
+    assert "Graph transitions" in html
