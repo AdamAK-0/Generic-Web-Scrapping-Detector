@@ -12,6 +12,7 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from generic_models.site_catalog import PageSpec, WebsiteSpec, get_websites, root_path
+from generic_models.visual_websites import render_visual_page
 
 
 class RunningSiteServer(NamedTuple):
@@ -123,97 +124,7 @@ def _canonical_path(raw_path: str, *, canonical_root: str) -> str:
 
 
 def _render_page(spec: WebsiteSpec, page: PageSpec) -> str:
-    link_cards = "\n".join(
-        f'<a class="link-card" href="{html.escape(link)}">{html.escape(link)}</a>'
-        for link in page.links
-    )
-    category = html.escape(page.category)
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{html.escape(page.title)} - {html.escape(spec.name)}</title>
-  <style>
-    :root {{ --accent: {spec.accent}; --ink: #14202b; --muted: #627487; --paper: #fff8ea; }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      color: var(--ink);
-      font-family: "Aptos Display", "Trebuchet MS", sans-serif;
-      background:
-        radial-gradient(circle at 14% 12%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 28rem),
-        radial-gradient(circle at 88% 8%, rgba(240, 173, 53, 0.2), transparent 24rem),
-        linear-gradient(135deg, #fff8ea, #eef8f4 52%, #f8eadb);
-    }}
-    main {{ width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 64px; }}
-    .hero, .card {{
-      border: 1px solid rgba(20, 32, 43, 0.12);
-      background: rgba(255, 251, 242, 0.88);
-      border-radius: 34px;
-      box-shadow: 0 24px 70px rgba(17, 44, 61, 0.14);
-      backdrop-filter: blur(16px);
-    }}
-    .hero {{ padding: 38px; margin-bottom: 18px; position: relative; overflow: hidden; }}
-    .hero::after {{
-      content: "";
-      position: absolute;
-      right: 30px;
-      top: 30px;
-      width: 132px;
-      height: 132px;
-      border-radius: 38px;
-      background: linear-gradient(135deg, var(--accent), #f0ad35);
-      transform: rotate(8deg);
-      opacity: 0.8;
-    }}
-    .eyebrow {{ color: var(--accent); font-weight: 900; letter-spacing: .16em; text-transform: uppercase; font-size: 12px; }}
-    h1 {{ margin: 14px 0 12px; max-width: 720px; font-size: clamp(44px, 8vw, 84px); line-height: .88; letter-spacing: -.07em; }}
-    p {{ color: var(--muted); font-size: 18px; line-height: 1.55; max-width: 720px; }}
-    .grid {{ display: grid; grid-template-columns: 1fr 320px; gap: 18px; align-items: start; }}
-    .card {{ padding: 22px; }}
-    .link-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }}
-    .link-card {{
-      display: block;
-      padding: 16px;
-      border-radius: 20px;
-      color: var(--ink);
-      text-decoration: none;
-      background: rgba(255, 255, 255, .66);
-      border: 1px solid rgba(20, 32, 43, .10);
-      font-weight: 850;
-    }}
-    .link-card:hover {{ transform: translateY(-2px); box-shadow: 0 14px 30px rgba(20, 32, 43, .12); }}
-    .pill {{ display: inline-flex; border-radius: 999px; padding: 8px 11px; color: #fff; background: var(--accent); font-weight: 900; }}
-    .meta {{ color: var(--muted); line-height: 1.8; }}
-    @media (max-width: 820px) {{ .grid {{ grid-template-columns: 1fr; }} .hero::after {{ opacity: .18; }} }}
-  </style>
-</head>
-<body>
-  <main>
-    <section class="hero">
-      <div class="eyebrow">{html.escape(spec.name)} / {html.escape(spec.shape)}</div>
-      <h1>{html.escape(page.title)}</h1>
-      <p>{html.escape(page.body)}</p>
-      <span class="pill">{category}</span>
-    </section>
-    <section class="grid">
-      <article class="card">
-        <h2>Available transitions</h2>
-        <div class="link-grid">{link_cards}</div>
-      </article>
-      <aside class="card meta">
-        <strong>Generic WSD test site</strong><br />
-        Site id: {html.escape(spec.site_id)}<br />
-        Port: {spec.port}<br />
-        Archetype: {html.escape(spec.archetype)}<br />
-        Shape: {html.escape(spec.shape)}
-      </aside>
-    </section>
-  </main>
-</body>
-</html>"""
+    return render_visual_page(spec, page)
 
 
 def _render_not_found(spec: WebsiteSpec, path: str, canonical_root: str) -> str:

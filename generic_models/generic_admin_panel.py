@@ -885,12 +885,26 @@ DASHBOARD_HTML = r"""
       gap: 10px;
       color: var(--muted);
       font-size: 14px;
+      min-width: 0;
     }
     .run, .issue {
       border: 1px solid var(--line);
       border-radius: 18px;
       padding: 12px;
       background: rgba(255, 255, 255, 0.48);
+      max-width: 100%;
+      min-width: 0;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .run strong,
+    .run div,
+    .run .small {
+      display: block;
+      max-width: 100%;
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
     .issue {
       color: #7a271a;
