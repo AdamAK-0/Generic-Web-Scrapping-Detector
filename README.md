@@ -57,6 +57,23 @@ The v2 model is saved as `generic_models/artifacts/models/interaction_v2_generic
 
 The generic admin demo now records local client telemetry from the four test websites. This adds defensive signals that server logs cannot see, including click-before-navigation, clicked destination match, destination-without-precursor, scroll/focus/keyboard density, page-type dwell residuals, and human transition likelihood. These signals are especially useful for browser-based bots that use direct `page.goto(...)` navigation with random cursor movement.
 
+## Optional Hard Browser Bot Test
+
+`generic_models\bot.py` is an optional local adversarial test script for Atlas Shop. It uses a real Chrome browser with random cursor movement, scrolling, random dwell time, and direct graph-valid navigation. The v2 model is designed to flag this style because transitions do not usually have meaningful click precursors.
+
+Install only if you want to run that local test:
+
+```bat
+pip install -r requirements-bot.txt
+```
+
+Then start the generic admin lab and run:
+
+```bat
+generic_models\scripts\start_generic_admin_panel.bat
+python generic_models\bot.py
+```
+
 ## Test
 
 ```bat

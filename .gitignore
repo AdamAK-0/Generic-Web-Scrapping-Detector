@@ -20,7 +20,6 @@ generic_models/artifacts/reports/*.csv
 generic_models/artifacts_fast/
 generic_models/artifacts_download_check/
 generic_models/data/external/zenodo/*.csv
-generic_models/bot.py
 
 # OS/editor noise
 .DS_Store
